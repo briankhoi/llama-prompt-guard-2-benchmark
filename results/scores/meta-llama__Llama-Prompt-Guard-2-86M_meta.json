@@ -1,0 +1,30 @@
+{
+  "model": "meta-llama/Llama-Prompt-Guard-2-86M",
+  "malicious_index": 1,
+  "malicious_index_source": "config override (id2label={0: 'LABEL_0', 1: 'LABEL_1'})",
+  "device": "mps",
+  "max_length": 512,
+  "window_content_tokens": 510,
+  "chunk_stride": 384,
+  "n_examples": 4910,
+  "latency": {
+    "chunk": {
+      "mean_ms": 90.76439802166901,
+      "p50_ms": 19.13133350899443,
+      "p95_ms": 263.7518980714958,
+      "max_ms": 3072.759083006531,
+      "mean_windows": 1.5077393075356416
+    },
+    "truncate": {
+      "mean_ms": 36.24570246263314,
+      "p50_ms": 19.22056300099939,
+      "p95_ms": 92.09422948770225,
+      "max_ms": 137.84608291462064,
+      "mean_windows": 1.0
+    }
+  },
+  "latency_note": "per example, one batch holding that example's windows, includes tokenization and device sync; timed on a second call per (example, mode) so first-seen-shape compilation on MPS is excluded",
+  "torch": "2.14.0",
+  "machine": "macOS-26.5.1-arm64-arm-64bit",
+  "scored_at": "2026-09-24T08:56:04+00:00"
+}

@@ -1,0 +1,15 @@
+{
+  "model": "keyword_template_aware",
+  "pattern_groups": [
+    "generic",
+    "template_specific"
+  ],
+  "device": "cpu",
+  "latency": {
+    "full": {
+      "mean_ms": 0.20220424909269827,
+      "p50_ms": 0.06960402242839336,
+      "p95_ms": 0.566415139473975
+    }
+  }
+}

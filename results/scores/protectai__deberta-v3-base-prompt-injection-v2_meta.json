@@ -1,0 +1,30 @@
+{
+  "model": "protectai/deberta-v3-base-prompt-injection-v2",
+  "malicious_index": 1,
+  "malicious_index_source": "id2label name 'INJECTION'",
+  "device": "mps",
+  "max_length": 512,
+  "window_content_tokens": 510,
+  "chunk_stride": 384,
+  "n_examples": 4910,
+  "latency": {
+    "chunk": {
+      "mean_ms": 77.35686405697484,
+      "p50_ms": 18.50718748755753,
+      "p95_ms": 263.0449438118376,
+      "max_ms": 2475.6201250711456,
+      "mean_windows": 1.4238289205702648
+    },
+    "truncate": {
+      "mean_ms": 34.510070763982625,
+      "p50_ms": 18.54652096517384,
+      "p95_ms": 91.13216624828056,
+      "max_ms": 100.06729199085385,
+      "mean_windows": 1.0
+    }
+  },
+  "latency_note": "per example, one batch holding that example's windows, includes tokenization and device sync; timed on a second call per (example, mode) so first-seen-shape compilation on MPS is excluded",
+  "torch": "2.14.0",
+  "machine": "macOS-26.5.1-arm64-arm-64bit",
+  "scored_at": "2026-09-24T09:14:50+00:00"
+}

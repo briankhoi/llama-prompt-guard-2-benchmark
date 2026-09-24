@@ -1,0 +1,49 @@
+{
+  "injecagent": {
+    "positives_raw": 2108,
+    "negatives_raw": 170,
+    "cases": 2108,
+    "template_mismatch": 0,
+    "slot_not_instruction": 0,
+    "templates": 17,
+    "fillers_per_template": {
+      "AmazonGetProductDetails": 10,
+      "EvernoteManagerSearchNotes": 10,
+      "GitHubGetRepositoryDetails": 10,
+      "GitHubGetUserDetails": 10,
+      "GitHubSearchRepositories": 10,
+      "GmailReadEmail": 10,
+      "GmailSearchEmails": 10,
+      "GoogleCalendarGetEventsFromSharedCalendar": 10,
+      "GoogleCalendarReadEvents": 10,
+      "ShopifyGetProductDetails": 10,
+      "TeladocViewReviews": 10,
+      "TodoistSearchTasks": 10,
+      "TwilioGetReceivedSmsMessages": 10,
+      "TwitterManagerGetUserProfile": 10,
+      "TwitterManagerReadTweet": 10,
+      "TwitterManagerSearchTweets": 10,
+      "WebBrowserNavigateTo": 10
+    }
+  },
+  "agentdojo": {
+    "benign_replay_errors": [],
+    "attack_replay_errors": [],
+    "label_disagreements": 0,
+    "runs": {
+      "important_instructions": 949,
+      "tool_knowledge": 949,
+      "ignore_previous": 949,
+      "injecagent": 949,
+      "direct": 949
+    }
+  },
+  "raw_counts_before_dedup": {
+    "agentdojo/attack": 6170,
+    "agentdojo/benign": 8324,
+    "hard_negatives/benign": 40,
+    "injecagent/attack": 2108,
+    "injecagent/benign": 170
+  },
+  "cross_label_duplicate_texts": 0
+}

@@ -1,0 +1,6 @@
+attack_category,n,PG2-22M chunk,PG2-86M chunk,protectai-v2 chunk,keyword-generic full,keyword-template-aware full
+direct,490,0.000,0.000,0.508,0.514,0.743
+ignore_previous,490,0.104,1.000,0.951,0.510,1.000
+important_instructions,490,0.000,0.380,0.716,0.578,1.000
+injecagent,490,0.008,1.000,0.949,1.000,1.000
+tool_knowledge,490,0.000,0.369,0.508,0.504,1.000

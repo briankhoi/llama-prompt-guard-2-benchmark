@@ -1,0 +1,14 @@
+{
+  "model": "keyword_generic",
+  "pattern_groups": [
+    "generic"
+  ],
+  "device": "cpu",
+  "latency": {
+    "full": {
+      "mean_ms": 0.13528608045087417,
+      "p50_ms": 0.0455204863101244,
+      "p95_ms": 0.39347343845292937
+    }
+  }
+}

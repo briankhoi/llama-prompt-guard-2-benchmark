@@ -1,0 +1,13 @@
+setting,attack_goal,attack_category,n,PG2-22M chunk,PG2-86M chunk,protectai-v2 chunk,keyword-generic full,keyword-template-aware full
+base,data_stealing,Financial Data,102,0.000,0.000,0.775,1.000,1.000
+base,data_stealing,Others,255,0.000,0.027,0.404,0.933,0.933
+base,data_stealing,Physical Data,187,0.000,0.000,0.513,1.000,1.000
+base,direct_harm,Data Security Harm,187,0.000,0.005,0.786,0.273,0.273
+base,direct_harm,Financial Harm,153,0.000,0.000,0.817,0.229,0.229
+base,direct_harm,Physical Harm,170,0.000,0.012,0.747,0.100,0.100
+enhanced,data_stealing,Financial Data,102,0.000,1.000,1.000,1.000,1.000
+enhanced,data_stealing,Others,255,0.012,1.000,1.000,1.000,1.000
+enhanced,data_stealing,Physical Data,187,0.000,1.000,1.000,1.000,1.000
+enhanced,direct_harm,Data Security Harm,187,0.011,1.000,1.000,1.000,1.000
+enhanced,direct_harm,Financial Harm,153,0.013,1.000,1.000,1.000,1.000
+enhanced,direct_harm,Physical Harm,170,0.024,1.000,1.000,1.000,1.000

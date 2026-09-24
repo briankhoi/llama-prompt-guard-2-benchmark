@@ -1,0 +1,5 @@
+suite,n,PG2-22M chunk,PG2-86M chunk,protectai-v2 chunk,keyword-generic full,keyword-template-aware full
+banking,180,0.000,0.478,0.600,0.511,0.944
+slack,125,0.072,0.424,0.520,0.200,0.920
+travel,665,0.069,0.689,0.792,0.514,0.886
+workspace,1480,0.000,0.507,0.730,0.718,0.980
