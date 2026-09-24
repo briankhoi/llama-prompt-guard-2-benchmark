@@ -1,0 +1,67 @@
+{
+  "model": "meta-llama/Llama-Prompt-Guard-2-86M+ctx",
+  "base_model": "meta-llama/Llama-Prompt-Guard-2-86M",
+  "malicious_index": 1,
+  "malicious_index_source": "config override (id2label={0: 'LABEL_0', 1: 'LABEL_1'})",
+  "device": "mps",
+  "max_length": 512,
+  "window_content_tokens": 510,
+  "chunk_stride": 384,
+  "n_examples": 4910,
+  "latency": {
+    "chunk": {
+      "mean_ms": 109.16091591864729,
+      "p50_ms": 25.998583005275577,
+      "p95_ms": 321.4430875261428,
+      "max_ms": 3383.991915965453,
+      "mean_windows": 1.6276985743380856
+    },
+    "truncate": {
+      "mean_ms": 42.15515108668585,
+      "p50_ms": 26.040895434562117,
+      "p95_ms": 92.28682700777426,
+      "max_ms": 104.91133399773389,
+      "mean_windows": 1.0
+    }
+  },
+  "latency_note": "per example, one batch holding that example's windows, includes tokenization and device sync; timed on a second call per (example, mode) so first-seen-shape compilation on MPS is excluded",
+  "torch": "2.14.0",
+  "machine": "macOS-26.5.1-arm64-arm-64bit",
+  "scored_at": "2026-09-24T10:58:59+00:00",
+  "context": {
+    "template": "User task: {user_task}\nTool: {tool_name}\nTool output: {tool_output_text}",
+    "chunk_overlap": 126,
+    "stride_rule": "output room - overlap, floored at half the output room",
+    "room": {
+      "low_room_tokens": 256,
+      "all": {
+        "prefix_tokens_median": 38.0,
+        "prefix_tokens_max": 179,
+        "output_room_min": 331,
+        "n_below_low_room": 0,
+        "n": 4910
+      },
+      "agentdojo": {
+        "prefix_tokens_median": 50.0,
+        "prefix_tokens_max": 179,
+        "output_room_min": 331,
+        "n_below_low_room": 0,
+        "n": 2592
+      },
+      "hard_negatives": {
+        "prefix_tokens_median": 20.0,
+        "prefix_tokens_max": 26,
+        "output_room_min": 484,
+        "n_below_low_room": 0,
+        "n": 40
+      },
+      "injecagent": {
+        "prefix_tokens_median": 35.0,
+        "prefix_tokens_max": 43,
+        "output_room_min": 467,
+        "n_below_low_room": 0,
+        "n": 2278
+      }
+    }
+  }
+}

@@ -17,7 +17,7 @@ make fetch                 # clone InjecAgent and AgentDojo at the pinned commit
 ## Reproduce
 
 ```bash
-make all                   # setup, fetch, dataset, score, baseline, diagnose, evaluate
+make all                   # setup, fetch, dataset, score, score-context, baseline, diagnose, evaluate
 ```
 
 or step by step:
@@ -25,6 +25,7 @@ or step by step:
 ```bash
 make dataset               # build_dataset.py  -> data/processed/dataset.{parquet,csv}, dataset_stats.md
 make score                 # score.py          -> results/scores/<model>.csv + _meta.json, for every model in config.yaml
+make score-context         # score.py --context -> results/scores/<model>+ctx.csv, results/context_prefix_only/ (PG2 with user task + tool name)
 make baseline              # baseline.py       -> results/scores/keyword_*.csv
 make diagnose              # diagnose_isolated.py -> results/isolated_injections.csv (each injected string scored alone)
 make evaluate              # evaluate.py       -> results/REPORT.md, results/metrics_*.csv
@@ -73,6 +74,18 @@ Tool outputs come from replaying each user task's ground-truth tool calls agains
 - **Latency:** per example, including tokenization and device sync, one batch holding that example's windows. Each (example, mode) is timed on a second call because MPS compiles kernels the first time it sees a new input length, which would otherwise add 10 to 100 ms to arbitrary examples.
 
 Models: `meta-llama/Llama-Prompt-Guard-2-22M`, `meta-llama/Llama-Prompt-Guard-2-86M`, and `protectai/deberta-v3-base-prompt-injection-v2` (set up as a stand-in while Prompt Guard 2 access was pending, kept as a reference point).
+
+### Context variant
+
+`score.py --context` (`make score-context`) scores PG2-22M and PG2-86M with the user task and tool name serialized as plain text before the tool output, using the single template in `scoring.context.template`:
+
+```
+User task: {user_task}
+Tool: {tool_name}
+Tool output: {tool_output_text}
+```
+
+The prefix (everything before the output) is repeated at the start of every 512-token window and only the output is chunked, so every window carries the context; truncation keeps the prefix plus as much output as fits. The results appear as separate systems (`PG2-22M+ctx`, `PG2-86M+ctx`) next to the output-only scores. As a control, each distinct prefix is also scored with an empty output (`results/context_prefix_only/`), since the user task is itself an instruction. See DECISIONS.md for the template choice and how `user_task` is filled per source.
 
 ### Keyword baselines
 

@@ -3,7 +3,9 @@
 Usage:
   python score.py --model meta-llama/Llama-Prompt-Guard-2-86M
   python score.py --model protectai/deberta-v3-base-prompt-injection-v2 --limit 50
+  python score.py --context            # user task + tool name + output, for scoring.context.models
 Writes results/scores/<model_slug>.csv (one row per example x mode) and <model_slug>_meta.json.
+With --context the system is named <model>+ctx, and the prefix-only control goes to results/context_prefix_only/.
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ import torch
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
 from pibench.common import ROOT, load_config, load_dataset, seed_everything
+from pibench.context import build_prefix, context_stride
 
 MODES = ("truncate", "chunk")
 
@@ -82,6 +85,7 @@ class Scorer:
         self.stride = cfg["scoring"]["chunk_stride"]
         if not 0 < self.stride <= self.content_len:
             raise ValueError(f"chunk_stride must be in (0, {self.content_len}]")
+        self.ctx_overlap = cfg["scoring"]["context"]["chunk_overlap"]
         self.device = device
         self.model.to(device)
 
@@ -104,10 +108,25 @@ class Scorer:
         logits = self.model(input_ids=ids, attention_mask=mask).logits.float()
         return torch.softmax(logits, dim=-1)[:, self.malicious_index].cpu().numpy()
 
-    def score_text(self, text: str, mode: str) -> dict:
+    def context_windows(self, context_ids: list[int], content: list[int], mode: str) -> tuple[list[list[int]], int]:
+        """Windows over the output only, each preceded by the full context prefix; returns (windows, output room)."""
+        room = self.content_len - len(context_ids)
+        if room < 1:
+            raise ValueError(f"Context prefix of {len(context_ids)} tokens leaves no room for output in a {self.max_length}-token window")
+        return [context_ids + w for w in windows(content, room, context_stride(room, self.ctx_overlap), mode)], room
+
+    def score_text(self, text: str, mode: str, context_prefix: str | None = None) -> dict:
         start = time.perf_counter()
         content = self.tok(text, add_special_tokens=False)["input_ids"]
-        wins = windows(content, self.content_len, self.stride, mode)
+        extra = {}
+        if context_prefix is None:
+            wins = windows(content, self.content_len, self.stride, mode)
+            n_context = 0
+        else:
+            context_ids = self.tok(context_prefix, add_special_tokens=False)["input_ids"]
+            wins, room = self.context_windows(context_ids, content, mode)
+            n_context = len(context_ids)
+            extra = {"prefix_tokens": n_context, "output_room": room}
         probs = self.score_windows(wins)
         self._sync()
         latency_ms = (time.perf_counter() - start) * 1000
@@ -115,8 +134,9 @@ class Scorer:
             "score": float(probs.max()),
             "argmax_window": int(probs.argmax()),
             "n_windows": len(wins),
-            "n_tokens": len(content) + len(self.prefix_ids) + len(self.suffix_ids),
+            "n_tokens": n_context + len(content) + len(self.prefix_ids) + len(self.suffix_ids),
             "latency_ms": latency_ms,
+            **extra,
         }
 
 
@@ -130,17 +150,28 @@ def check_windowing_matches_tokenizer(scorer: Scorer, texts: list[str]) -> None:
             raise RuntimeError(f"Manual windowing disagrees with tokenizer truncation for {scorer.name}")
 
 
-def run(scorer: Scorer, df: pd.DataFrame, warmup: int) -> pd.DataFrame:
-    for text in df["tool_output_text"].head(warmup):
-        scorer.score_text(text, "chunk")
+def check_context_windowing(scorer: Scorer, texts: list[str], prefixes: list[str]) -> None:
+    """With context, the first window must equal the tokenizer's own truncated encoding of prefix + output."""
+    for text, prefix in zip(texts, prefixes):
+        content = scorer.tok(text, add_special_tokens=False)["input_ids"]
+        context_ids = scorer.tok(prefix, add_special_tokens=False)["input_ids"]
+        manual = scorer.wrap(scorer.context_windows(context_ids, content, "truncate")[0][0])
+        native = scorer.tok(prefix + text, truncation=True, max_length=scorer.max_length)["input_ids"]
+        if manual != native:
+            raise RuntimeError(f"Context windowing disagrees with tokenizer truncation of prefix + output for {scorer.name}")
+
+
+def run(scorer: Scorer, df: pd.DataFrame, warmup: int, prefixes: list[str | None], label: str) -> pd.DataFrame:
+    for text, prefix in list(zip(df["tool_output_text"], prefixes))[:warmup]:
+        scorer.score_text(text, "chunk", prefix)
     rows = []
-    for i, (eid, text) in enumerate(zip(df["example_id"], df["tool_output_text"])):
+    for i, (eid, text, prefix) in enumerate(zip(df["example_id"], df["tool_output_text"], prefixes)):
         for mode in MODES:
             # Untimed first call so MPS's one-off kernel compilation for a new input shape isn't counted as latency.
-            scorer.score_text(text, mode)
-            rows.append({"example_id": eid, "model": scorer.name, "mode": mode, **scorer.score_text(text, mode)})
+            scorer.score_text(text, mode, prefix)
+            rows.append({"example_id": eid, "model": label, "mode": mode, **scorer.score_text(text, mode, prefix)})
         if (i + 1) % 500 == 0:
-            print(f"  {scorer.name}: {i + 1}/{len(df)}", flush=True)
+            print(f"  {label}: {i + 1}/{len(df)}", flush=True)
     return pd.DataFrame(rows)
 
 
@@ -158,32 +189,73 @@ def latency_summary(scores: pd.DataFrame) -> dict:
     return out
 
 
+def context_prefixes(df: pd.DataFrame, cfg: dict) -> list[str]:
+    template = cfg["scoring"]["context"]["template"]
+    return [build_prefix(template, ut, tn) for ut, tn in zip(df["user_task"], df["tool_name"])]
+
+
+def score_prefix_only(scorer: Scorer, df: pd.DataFrame, cfg: dict, label: str) -> pd.DataFrame:
+    """Control: the serialized context with an empty output, once per distinct (source, user_task, tool_name)."""
+    pairs = df[["source", "user_task", "tool_name"]].drop_duplicates().reset_index(drop=True)
+    rows = []
+    for r in pairs.itertuples(index=False):
+        prefix = build_prefix(cfg["scoring"]["context"]["template"], r.user_task, r.tool_name)
+        res = scorer.score_text(prefix, "truncate")
+        rows.append({"source": r.source, "user_task": r.user_task, "tool_name": r.tool_name, "model": label,
+                     "score": res["score"], "n_tokens": res["n_tokens"]})
+    return pd.DataFrame(rows)
+
+
+def room_summary(scores: pd.DataFrame, df: pd.DataFrame, low_room: int) -> dict:
+    """How much of each window the context prefix uses, overall and per source."""
+    s = scores[scores["mode"] == "chunk"].merge(df[["example_id", "source"]], on="example_id")
+    out = {"low_room_tokens": low_room}
+    for src, g in [("all", s), *s.groupby("source")]:
+        out[src] = {
+            "prefix_tokens_median": float(g.prefix_tokens.median()),
+            "prefix_tokens_max": int(g.prefix_tokens.max()),
+            "output_room_min": int(g.output_room.min()),
+            "n_below_low_room": int((g.output_room < low_room).sum()),
+            "n": int(len(g)),
+        }
+    return out
+
+
 def score_model(name: str, cfg: dict, args) -> None:
     seed_everything(cfg["seed"])
     df = load_dataset(cfg)
     if args.limit:
         df = df.sample(n=min(args.limit, len(df)), random_state=cfg["seed"])
+    label = name + cfg["scoring"]["context"]["system_suffix"] if args.context else name
+    prefixes = context_prefixes(df, cfg) if args.context else [None] * len(df)
     device = pick_device(args.device or cfg["scoring"]["device"])
+
+    def attempt(dev):
+        scorer = Scorer(name, cfg, dev, args.malicious_index)
+        if args.context:
+            check_context_windowing(scorer, df["tool_output_text"].head(20).tolist(), prefixes[:20])
+        else:
+            check_windowing_matches_tokenizer(scorer, df["tool_output_text"].head(20).tolist())
+        return scorer, run(scorer, df, cfg["scoring"]["warmup_examples"], prefixes, label)
+
     try:
-        scorer = Scorer(name, cfg, device, args.malicious_index)
-        check_windowing_matches_tokenizer(scorer, df["tool_output_text"].head(20).tolist())
-        scores = run(scorer, df, cfg["scoring"]["warmup_examples"])
+        scorer, scores = attempt(device)
     except RuntimeError as exc:
         if device.type == "cpu":
             raise
         print(f"[warn] {device} failed ({exc}); falling back to CPU", flush=True)
         device = torch.device("cpu")
-        scorer = Scorer(name, cfg, device, args.malicious_index)
-        scores = run(scorer, df, cfg["scoring"]["warmup_examples"])
+        scorer, scores = attempt(device)
     scores["device"] = device.type
 
     out_dir = ROOT / cfg["paths"]["scores_dir"]
     out_dir.mkdir(parents=True, exist_ok=True)
     suffix = f"_limit{args.limit}" if args.limit else ""
-    csv_path = out_dir / f"{model_slug(name)}{suffix}.csv"
+    csv_path = out_dir / f"{model_slug(label)}{suffix}.csv"
     scores.to_csv(csv_path, index=False)
     meta = {
-        "model": name,
+        "model": label,
+        "base_model": name,
         "malicious_index": scorer.malicious_index,
         "malicious_index_source": scorer.malicious_source,
         "device": device.type,
@@ -197,8 +269,19 @@ def score_model(name: str, cfg: dict, args) -> None:
         "machine": platform.platform(),
         "scored_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
-    (out_dir / f"{model_slug(name)}{suffix}_meta.json").write_text(json.dumps(meta, indent=2))
+    if args.context:
+        ctx = cfg["scoring"]["context"]
+        meta["context"] = {"template": ctx["template"], "chunk_overlap": ctx["chunk_overlap"],
+                           "stride_rule": "output room - overlap, floored at half the output room",
+                           "room": room_summary(scores, df, ctx["low_room_tokens"])}
+        control = score_prefix_only(scorer, df, cfg, label)
+        control_dir = ROOT / "results" / "context_prefix_only"
+        control_dir.mkdir(parents=True, exist_ok=True)
+        control.to_csv(control_dir / f"{model_slug(label)}{suffix}.csv", index=False)
+    (out_dir / f"{model_slug(label)}{suffix}_meta.json").write_text(json.dumps(meta, indent=2))
     print(f"Wrote {csv_path}\n{json.dumps(meta['latency'], indent=2)}")
+    if args.context:
+        print(json.dumps(meta["context"]["room"], indent=2))
 
 
 def main() -> None:
@@ -208,9 +291,11 @@ def main() -> None:
     parser.add_argument("--device", choices=["mps", "cuda", "cpu"], help="override scoring.device")
     parser.add_argument("--malicious-index", type=int, help="output index meaning malicious, for models with generic labels")
     parser.add_argument("--limit", type=int, help="score a random subset (for smoke tests; output file gets a suffix)")
+    parser.add_argument("--context", action="store_true", help="prepend the user task and tool name (scoring.context.template)")
     args = parser.parse_args()
     cfg = load_config(args.config)
-    for name in args.model or cfg["scoring"]["models"]:
+    default_models = cfg["scoring"]["context"]["models"] if args.context else cfg["scoring"]["models"]
+    for name in args.model or default_models:
         print(f"Scoring {name}", flush=True)
         score_model(name, cfg, args)
 

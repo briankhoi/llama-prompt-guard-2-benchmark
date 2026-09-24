@@ -1,12 +1,12 @@
-# End-to-end: `make all` (setup, fetch pinned sources, build dataset, score, baseline, evaluate).
+# End-to-end: `make all` (setup, fetch pinned sources, build dataset, score, score-context, baseline, evaluate).
 PY := .venv/bin/python
 INJECAGENT_COMMIT := f19c9f2c79a41046eb13c03c51a24c567a8ffa07
 AGENTDOJO_COMMIT := a75aba7631d3ca5fb7ab938965c97ead2f9ff84b
 MODEL ?=
 
-.PHONY: all setup fetch dataset score score-model baseline diagnose evaluate
+.PHONY: all setup fetch dataset score score-model score-context baseline diagnose evaluate
 
-all: setup fetch dataset score baseline diagnose evaluate
+all: setup fetch dataset score score-context baseline diagnose evaluate
 
 setup:
 	[ -d .venv ] || uv venv --python 3.12 .venv
@@ -31,6 +31,11 @@ score:
 score-model:
 	@test -n "$(MODEL)" || (echo "usage: make score-model MODEL=<hf id>" && exit 1)
 	$(PY) score.py --model $(MODEL)
+
+# Context variant: user task + tool name + output as plain text, for scoring.context.models (PG2-22M and PG2-86M).
+# Writes results/scores/<model>+ctx.csv and the prefix-only control in results/context_prefix_only/.
+score-context:
+	$(PY) score.py --context
 
 baseline:
 	$(PY) baseline.py

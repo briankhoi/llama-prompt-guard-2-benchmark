@@ -13,6 +13,9 @@ from pibench.common import ROOT
 SHORT_NAMES = {
     "meta-llama/Llama-Prompt-Guard-2-22M": "PG2-22M",
     "meta-llama/Llama-Prompt-Guard-2-86M": "PG2-86M",
+    # Context variant (score.py --context): user task + tool name serialized before the output.
+    "meta-llama/Llama-Prompt-Guard-2-22M+ctx": "PG2-22M+ctx",
+    "meta-llama/Llama-Prompt-Guard-2-86M+ctx": "PG2-86M+ctx",
     "protectai/deberta-v3-base-prompt-injection-v2": "protectai-v2",
     "keyword_generic": "keyword-generic",
     "keyword_template_aware": "keyword-template-aware",

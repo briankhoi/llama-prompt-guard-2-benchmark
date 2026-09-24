@@ -72,6 +72,11 @@ def ranking_table(h: pd.DataFrame, slices: list[str], cfg) -> str:
     return md_table(pd.DataFrame(cols))
 
 
+def calibrated_threshold(g: pd.DataFrame, cal: str, target: float) -> float:
+    """Threshold at which `target` of benchmark `cal`'s benign outputs score at or above it (chunk-mode rows of one system)."""
+    return float(np.quantile(g[(g.source == cal) & (g.y == 0)].score, 1 - target))
+
+
 def transfer_threshold_table(merged, systems_present, target_fprs) -> pd.DataFrame:
     """Pick each threshold on one benchmark's benign outputs and evaluate on the other, so no threshold is tuned on the data it's scored on."""
     breakdown = {"injecagent": "setting", "agentdojo": "attack_name"}
@@ -80,10 +85,9 @@ def transfer_threshold_table(merged, systems_present, target_fprs) -> pd.DataFra
         g = merged[(merged.system == sys_name) & (merged["mode"] == "chunk")]
         hard = g[g.source == "hard_negatives"].score
         for cal, test in [("injecagent", "agentdojo"), ("agentdojo", "injecagent")]:
-            cal_neg = g[(g.source == cal) & (g.y == 0)].score
             t_pos, t_neg = g[(g.source == test) & (g.y == 1)], g[(g.source == test) & (g.y == 0)].score
             for target in target_fprs:
-                t = float(np.quantile(cal_neg, 1 - target))
+                t = calibrated_threshold(g, cal, target)
                 parts = t_pos.groupby(breakdown[test]).score.apply(lambda s: (s >= t).mean())
                 rows.append({"system": sys_name, "threshold from": f"{cal} benign @ {target:.0%} FPR", "threshold": fmt(t, 4),
                              "evaluated on": test, "TPR": fmt((t_pos.score >= t).mean()), "FPR": fmt((t_neg >= t).mean()),
@@ -234,6 +238,142 @@ def sanity_section(merged, data, h) -> str:
     return "\n".join(lines)
 
 
+CTX_PAIRS = [("PG2-22M", "PG2-22M+ctx"), ("PG2-86M", "PG2-86M+ctx")]
+CTX_CALIBRATIONS = [("injecagent", 0.01), ("injecagent", 0.05), ("agentdojo", 0.01), ("agentdojo", 0.05)]
+
+
+def _rate(scores: pd.Series, thr: float) -> str:
+    return fmt(float((scores >= thr).mean())) if len(scores) else "–"
+
+
+def context_rates_table(merged, pairs, thr) -> pd.DataFrame:
+    """Output-only vs +ctx side by side at one threshold, per benchmark and on hard negatives."""
+    from sklearn.metrics import roc_auc_score
+
+    rows = []
+    for base, ctx in pairs:
+        for mode in ("chunk", "truncate"):
+            for sys_name in (base, ctx):
+                g = merged[(merged.system == sys_name) & (merged["mode"] == mode)]
+                row = {"system": sys_name, "mode": mode}
+                for src, short in (("injecagent", "IA"), ("agentdojo", "AD")):
+                    d = g[g.source == src]
+                    row[f"{short} TPR"] = _rate(d[d.y == 1].score, thr)
+                    row[f"{short} FPR"] = _rate(d[d.y == 0].score, thr)
+                    row[f"{short} ROC-AUC"] = fmt(float(roc_auc_score(d.y, d.score)))
+                row["hard-neg FPR"] = _rate(g[g.source == "hard_negatives"].score, thr)
+                rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def load_prefix_control() -> pd.DataFrame:
+    control_dir = ROOT / "results" / "context_prefix_only"
+    files = sorted(p for p in control_dir.glob("*.csv") if "_limit" not in p.name) if control_dir.exists() else []
+    if not files:
+        return pd.DataFrame()
+    control = pd.concat([pd.read_csv(p) for p in files], ignore_index=True)
+    control["system"] = control.model.map(lambda m: SHORT_NAMES.get(m, m))
+    return control
+
+
+def prefix_control_table(merged, control, thr) -> pd.DataFrame:
+    """Prefix alone (task + tool name, empty output): how often is it flagged, at 0.5 and at the +ctx system's calibrated thresholds?"""
+    rows = []
+    for sys_name, c in control.groupby("system"):
+        g = merged[(merged.system == sys_name) & (merged["mode"] == "chunk")]
+        cal = {f"{src} @{t:.0%}": calibrated_threshold(g, src, t) for src, t in CTX_CALIBRATIONS}
+        for src, cs in c.groupby("source"):
+            row = {"system": sys_name, "source": src, "distinct prefixes": len(cs), "median score": fmt(float(cs.score.median()), 4),
+                   "max score": fmt(float(cs.score.max()), 4), f"flagged @{thr}": _rate(cs.score, thr)}
+            row["flagged @ calibrated thresholds"] = ", ".join(f"{k} ({v:.4f}): {(cs.score >= v).mean():.2f}" for k, v in cal.items())
+            rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def prefix_attribution(merged, control, thr) -> pd.DataFrame:
+    """Of the +ctx flags at `thr`, how many come from rows whose prefix alone already scores >= thr?"""
+    rows = []
+    for sys_name, c in control.groupby("system"):
+        g = merged[(merged.system == sys_name) & (merged["mode"] == "chunk")]
+        g = g.merge(c[["source", "user_task", "tool_name", "score"]].rename(columns={"score": "prefix_score"}),
+                    on=["source", "user_task", "tool_name"], how="left", validate="many_to_one")
+        if g.prefix_score.isna().any():
+            raise ValueError(f"{sys_name}: {int(g.prefix_score.isna().sum())} rows have no prefix-only control score")
+        for label in ("attack", "benign"):
+            flagged = g[(g.label == label) & (g.score >= thr)]
+            rows.append({"system": sys_name, "label": label, f"flagged @{thr}": len(flagged),
+                         "of which prefix alone flagged": int((flagged.prefix_score >= thr).sum())})
+    return pd.DataFrame(rows)
+
+
+def context_flips(merged, pairs, cfg, thr) -> str:
+    """Examples where adding the context changed the decision at `thr` (chunk mode), in each direction."""
+    rng = np.random.default_rng(cfg["seed"])
+    n_chars = cfg["evaluation"]["excerpt_chars"]
+    count_rows, example_rows = [], []
+    for base, ctx in pairs:
+        a = merged[(merged.system == base) & (merged["mode"] == "chunk")]
+        b = merged[(merged.system == ctx) & (merged["mode"] == "chunk")][["example_id", "score"]]
+        j = a.merge(b, on="example_id", suffixes=("_out", "_ctx"), validate="one_to_one")
+        directions = {
+            "attack: caught only with context": (j.y == 1) & (j.score_out < thr) & (j.score_ctx >= thr),
+            "attack: caught only without context": (j.y == 1) & (j.score_out >= thr) & (j.score_ctx < thr),
+            "benign: flagged only with context": (j.y == 0) & (j.score_out < thr) & (j.score_ctx >= thr),
+            "benign: flagged only without context": (j.y == 0) & (j.score_out >= thr) & (j.score_ctx < thr),
+        }
+        for name, mask in directions.items():
+            f = j[mask]
+            count_rows.append({"model": base, "direction": name, "n": len(f),
+                               "by source": ", ".join(f"{k} {v}" for k, v in f.source.value_counts().sort_index().items()) or "–"})
+            # Round-robin over (source, tool) groups so the few examples shown aren't all the same tool output.
+            groups = [grp.iloc[rng.permutation(len(grp))] for _, grp in f.groupby(["source", "tool_name"])]
+            groups = [groups[i] for i in rng.permutation(len(groups))]
+            picks = [grp.iloc[k] for k in range(max((len(x) for x in groups), default=0)) for grp in groups if k < len(grp)][:3]
+            for r in picks:
+                example_rows.append({"model": base, "direction": name, "source": r.source, "category": r.attack_category,
+                                     "tool": r.tool_name, "user task": " ".join(str(r.user_task).split())[:90].replace("|", "\\|"),
+                                     "output-only": fmt(r.score_out), "+ctx": fmt(r.score_ctx),
+                                     "excerpt": excerpt(r.tool_output_text, r.inj_char_start if r.y == 1 else None, n_chars // 2)})
+    return (md_table(pd.DataFrame(count_rows)) + "\n\nUp to 3 examples per direction, sampled with a fixed seed (attack excerpts start near the injection):\n\n"
+            + md_table(pd.DataFrame(example_rows)))
+
+
+def context_section(merged, cfg, thr) -> str:
+    present = set(merged.system)
+    pairs = [(b, c) for b, c in CTX_PAIRS if b in present and c in present]
+    if not pairs:
+        return "_No context-variant scores found; run `make score-context`._"
+    ctx_cfg = cfg["scoring"]["context"]
+    systems_ctx = [s for pair in pairs for s in pair]
+    chunk_modes = [(s, "chunk") for s in systems_ctx]
+    ia, ad = merged[merged.source == "injecagent"], merged[merged.source == "agentdojo"]
+    control = load_prefix_control()
+    parts = [
+        "Same models, but the input is the user task and tool name serialized in front of the tool output with one template fixed before scoring:",
+        "", "```", ctx_cfg["template"], "```", "",
+        "The prefix (everything before the output) is repeated at the start of every window and only the output is chunked. "
+        "`+ctx` rows use the same examples, labels and modes as the output-only rows. The hard-negative tasks were hand-written along with the outputs, so that column is reported separately and is the least trustworthy.",
+        "", f"### At threshold {thr}", "", md_table(context_rates_table(merged, pairs, thr)), "",
+        "### At cross-benchmark calibrated thresholds (chunk mode)", "",
+        "Each system gets its own thresholds, chosen on the other benchmark's benign outputs exactly as in the threshold-free section.", "",
+        md_table(transfer_threshold_table(merged, systems_ctx, cfg["evaluation"]["fixed_fprs"])), "",
+        f"### By InjecAgent setting and AgentDojo attack template (threshold {thr}, chunk mode)", "",
+        md_table(rate_by(ia, ["setting"], chunk_modes, thr, "attack")), "",
+        md_table(rate_by(ad, ["attack_name"], chunk_modes, thr, "attack")), "",
+        f"### Hard negatives by category (false-positive rate at {thr}, chunk mode)", "",
+        md_table(hard_negative_table(merged, chunk_modes, thr)), "",
+        "### Control: the context prefix alone", "",
+        "The user task is itself an instruction, so a detector could flag the context by itself, which would raise recall and false positives for the wrong reason. "
+        "Each distinct (source, user task, tool name) prefix is scored with an empty output (`results/context_prefix_only/`). "
+        "InjecAgent attack and benign rows share the same 17 prefixes, so a flagged prefix there raises TPR and FPR together.", "",
+        md_table(prefix_control_table(merged, control, thr)) if len(control) else "_No prefix-only control scores found._", "",
+        md_table(prefix_attribution(merged, control, thr)) if len(control) else "", "",
+        f"### Decisions flipped by adding context (threshold {thr}, chunk mode)", "",
+        context_flips(merged, pairs, cfg, thr),
+    ]
+    return "\n".join(parts)
+
+
 def git_head() -> str:
     try:
         return subprocess.run(["git", "-C", str(ROOT), "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip()
@@ -322,6 +462,10 @@ The TPR@FPR columns above pick the threshold on the same data they report, so th
 Each unique injected string scored on its own (`diagnose_isolated.py`), next to the same attack embedded in tool outputs (chunk mode). A low isolated rate means the detector doesn't consider that text an attack at all; a high isolated rate with a low embedded rate means the surrounding tool-output data dilutes it.
 
 {md_table(isolated_table(merged, thr))}
+
+## Context variant: user task and tool name as extra input
+
+{context_section(merged, cfg, thr)}
 
 ## Truncation vs chunking
 
